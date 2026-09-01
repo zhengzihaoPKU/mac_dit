@@ -1,0 +1,7 @@
+# Ignore downloaded model files, but keep the directory documentation.
+/model/*
+!/model/readme.md
+
+# Ignore the virtual environment, but keep its documentation.
+/.venv/*
+!/.venv/readme.md

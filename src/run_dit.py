@@ -23,7 +23,7 @@ pipe.scheduler = DPMSolverMultistepScheduler.from_config(pipe.scheduler.config)
 # 4. 把整个 pipeline 移到你的 MPS 设备上
 pipe = pipe.to(device)
 
-print("模型載入完成，準備開始生成圖片... (ง •̀_•́)ง")
+print("模型加载完成，开始生成图片...")
 
 # 5. 执行生成！
 #    class_labels=[281] 是 "tabby cat"（虎斑猫）
@@ -39,5 +39,4 @@ print(f"图片生成耗时：{generation_time:.2f} 秒")
 output_path = "./image/dit_generated_image.png"
 image.save(output_path)
 
-print(f"圖片生成完畢！🎉 已經存到 {output_path}")
-print("快去看看你的 M2 Pro 產的虎斑貓吧！")
+print(f"图片生成完成！🎉 已经存到 {output_path}")

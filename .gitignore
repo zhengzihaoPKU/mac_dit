@@ -5,3 +5,5 @@
 # Ignore the virtual environment, but keep its documentation.
 /.venv/*
 !/.venv/readme.md
+
+/.DS_Store

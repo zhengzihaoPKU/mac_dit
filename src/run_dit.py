@@ -1,3 +1,4 @@
+import time
 import torch
 from diffusers import DiTPipeline, DPMSolverMultistepScheduler
 from PIL import Image
@@ -26,7 +27,13 @@ print("模型載入完成，準備開始生成圖片... (ง •̀_•́)ง")
 
 # 5. 执行生成！
 #    class_labels=[281] 是 "tabby cat"（虎斑猫）
+torch.mps.synchronize()
+start_time = time.perf_counter()
 image = pipe(class_labels=[281], num_inference_steps=25).images[0]
+torch.mps.synchronize()
+generation_time = time.perf_counter() - start_time
+
+print(f"图片生成耗时：{generation_time:.2f} 秒")
 
 # 6. 保存图片
 output_path = "./image/dit_generated_image.png"

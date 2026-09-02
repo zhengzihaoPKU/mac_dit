@@ -5,4 +5,4 @@ uv venv
 source .venv/bin/activate.fish
 
 # get dependencies
-uv pip install time torch diffusers transformers accelerate Pillow huggingface_hub
+uv pip install torch diffusers transformers accelerate Pillow huggingface_hub

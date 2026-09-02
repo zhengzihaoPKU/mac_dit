@@ -6,7 +6,7 @@
 
 ```bash
 uv venv
-uv pip install torch diffusers transformers accelerate Pillow huggingface_hub
+uv pip install torch diffusers transformers accelerate Pillow huggingface_hub safetensors
 ```
 
 如需激活环境，请根据当前 Shell 选择命令：

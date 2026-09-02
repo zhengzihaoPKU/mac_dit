@@ -25,8 +25,11 @@ mac_dit/
 │   │   ├── formatting.py   # 内存与参数量格式化
 │   │   ├── hardware.py     # Mac、GPU 和 MPS 信息
 │   │   ├── model_info.py   # DiT 模型信息统计
-│   │   └── pipeline.py     # 模型加载、推理和图片保存
+│   │   ├── pipeline.py     # 模型加载、推理和图片保存
+│   │   ├── benchmark.py    # 量化性能基准
+│   │   └── quantization/   # 量化算法、模块、后端与序列化
 │   ├── check_backend.py    # MPS 检查兼容入口
+│   ├── benchmark_quantization.py # 量化基准入口
 │   ├── model_config_fetch.py # 模型信息兼容入口
 │   ├── mps_config_fetch.py # Mac 硬件信息兼容入口
 │   └── run_dit.py          # 图片生成兼容入口
@@ -56,7 +59,7 @@ bash scripts/step1_uv_install.sh
 
 ```bash
 uv venv
-uv pip install torch diffusers transformers accelerate Pillow huggingface_hub
+uv pip install torch diffusers transformers accelerate Pillow huggingface_hub safetensors
 ```
 
 如需激活虚拟环境，请根据当前 Shell 选择命令：
@@ -120,14 +123,118 @@ uv run python src/run_dit.py
 也可以直接传入类别和推理步数，例如生成虎斑猫：
 
 ```bash
-uv run python src/run_dit.py --class-label 281 --steps 25
+uv run python src/run_dit.py --class-label 281 --steps 25 --seed 42
 ```
 
 首次运行时会从 Hugging Face 下载模型，所需时间取决于网络速度。模型缓存在 `model/`，生成结果保存为：
 
 ```text
-image/dit_generated_image_<类别编号>.png
+image/dit_generated_image_<类别编号>_<精度>_seed<种子>.png
 ```
+
+## 模型量化
+
+项目提供 INT8 和 INT4 weight-only 量化。默认只量化 DiT Transformer 中的 attention 与 feed-forward Linear，AdaNorm、timestep embedding、最终输出投影和 VAE 保持 FP16。
+
+### INT8 W8A16
+
+```bash
+uv run python src/run_dit.py \
+  --class-label 281 \
+  --seed 42 \
+  --quantization int8
+```
+
+INT8 使用 per-output-channel 对称量化，激活保持 FP16。
+
+### INT4 W4A16
+
+```bash
+uv run python src/run_dit.py \
+  --class-label 281 \
+  --seed 42 \
+  --quantization int4 \
+  --group-size 128
+```
+
+INT4 使用 group-wise 对称量化，并将两个 INT4 权重打包到一个字节。可以测试 `64` 或 `128` 的 group size。
+
+### 调整量化范围
+
+量化全部 Linear：
+
+```bash
+uv run python src/run_dit.py --quantization int8 --quantize-all-linears
+```
+
+按模块名称排除敏感层：
+
+```bash
+uv run python src/run_dit.py \
+  --quantization int8 \
+  --exclude-layer transformer_blocks.0 \
+  --exclude-layer transformer_blocks.27
+```
+
+### 保存和加载量化模型
+
+```bash
+# 只量化并保存，不生成图片。默认保存到：
+# model/quantized/DiT-XL-2-256-int4-g128/
+uv run python src/run_dit.py \
+  --quantization int4 \
+  --group-size 128 \
+  --quantize-only
+
+# 也可以显式指定目录
+uv run python src/run_dit.py \
+  --quantization int4 \
+  --quantize-only \
+  --save-quantized ./model/quantized/my-dit-int4
+
+# 直接加载已保存的量化 Transformer
+uv run python src/run_dit.py \
+  --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128
+
+# 使用另一个后端加载同一份量化权重
+uv run python src/run_dit.py \
+  --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128 \
+  --quant-backend metal
+```
+
+量化目录包含 `transformer.safetensors` 与 `quantization.json`。建议将其放在 `model/` 下，避免上传大型权重文件。
+
+### 性能基准
+
+使用相同类别、seed、scheduler 和推理步数分别运行 FP16、INT8 与 INT4：
+
+```bash
+# FP16
+uv run python src/benchmark_quantization.py \
+  --class-label 281 --seed 42 --steps 25 --warmup 1 --repeats 3
+
+# INT8
+uv run python src/benchmark_quantization.py \
+  --class-label 281 --seed 42 --steps 25 \
+  --quantization int8 --warmup 1 --repeats 3 \
+  --json ./benchmark-int8.json
+
+# INT4
+uv run python src/benchmark_quantization.py \
+  --class-label 281 --seed 42 --steps 25 \
+  --quantization int4 --group-size 128 --warmup 1 --repeats 3
+```
+
+当前 `reference` 后端在每个 Linear 前向时反量化，再调用浮点 `F.linear`。它用于验证量化正确性和内存压缩，不保证比 FP16 更快。
+
+也可以启用实验性的 Metal 后端：
+
+```bash
+uv run python src/run_dit.py \
+  --quantization int4 --quant-backend metal
+```
+
+该后端通过 `torch.mps.compile_shader` 调用自定义 W8A16/W4A16 Linear。算子直接读取 INT8 或打包 INT4 权重，在乘法循环中应用 scale，不会先生成完整 FP16 权重矩阵；激活保持 FP16，累加使用 FP32。当前实现是正确性优先的基础 kernel，尚未加入矩阵分块、SIMD 协作和线程组缓存等性能优化，需要支持 `torch.mps.compile_shader` 的 PyTorch 和可用的 MPS 环境。环境不满足条件时，请使用默认的 `reference` 后端。
 
 ## 调整生成参数
 
@@ -135,6 +242,7 @@ image/dit_generated_image_<类别编号>.png
 
 - `--class-label`：ImageNet 类别编号，`281` 表示虎斑猫。
 - `--steps`：推理步数，步数越多通常耗时越长。
+- `--seed`：随机种子，用于复现实验和比较量化结果。
 - `--output-dir`：生成图片的保存目录。
 - `--model-id`：需要加载的 Hugging Face 模型 ID。
 - `--cache-dir`：模型缓存目录。
@@ -144,8 +252,14 @@ image/dit_generated_image_<类别编号>.png
 ```python
 from mac_dit.config import GenerationConfig
 from mac_dit.pipeline import generate_image, load_pipeline
+from mac_dit.quantization import QuantizationConfig
 
-config = GenerationConfig(class_label=281, inference_steps=25)
+config = GenerationConfig(
+    class_label=281,
+    inference_steps=25,
+    seed=42,
+    quantization=QuantizationConfig(mode="int8"),
+)
 pipe = load_pipeline(config)
 result = generate_image(pipe, config)
 print(result.image_path, result.elapsed_seconds)

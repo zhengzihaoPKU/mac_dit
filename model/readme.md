@@ -12,3 +12,14 @@ uv run python src/run_dit.py
 ```
 
 请从项目根目录执行该命令，以确保模型缓存到正确位置。
+
+INT8/INT4 Transformer 会保存在 `model/quantized/` 的独立目录中，例如：
+
+```bash
+uv run python src/run_dit.py \
+  --quantization int4 \
+  --group-size 128 \
+  --quantize-only
+```
+
+上面的命令默认写入 `model/quantized/DiT-XL-2-256-int4-g128/`。量化 checkpoint 同样不会上传到 GitHub。

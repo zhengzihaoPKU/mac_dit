@@ -163,4 +163,4 @@ print(result.image_path, result.elapsed_seconds)
 
 ### 重新创建虚拟环境
 
-删除本地 `.venv/` 后，重新执行“创建虚拟环境并安装依赖”中的命令即可。虚拟环境不需要上传到 GitHub。
+删除本地 `.venv/` 后，重新执行“创建虚拟环境并安装依赖”中的命令即可。

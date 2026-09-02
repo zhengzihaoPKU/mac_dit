@@ -31,3 +31,12 @@ uv run python src/convert_to_mlx.py --bits 4 --group-size 128
 ```
 
 默认输出为 `model/mlx/DiT-XL-2-256-w4-g128/`，其中包含 `dit.safetensors` 和 `mlx_config.json`。
+
+如需同时量化权重和激活，可以生成独立的 MXFP8 W8A8 或 NVFP4 W4A4 checkpoint：
+
+```bash
+uv run python src/convert_to_mlx.py --activation-quantization mxfp8
+uv run python src/convert_to_mlx.py --activation-quantization nvfp4
+```
+
+对应目录为 `model/mlx/DiT-XL-2-256-mxfp8-w8a8/` 和 `model/mlx/DiT-XL-2-256-nvfp4-w4a4/`。这些大型 checkpoint 同样不会上传到 GitHub。

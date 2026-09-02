@@ -33,7 +33,7 @@ mac_dit/
 │   ├── check_backend.py    # MPS availability check
 │   ├── benchmark_quantization.py # Quantization benchmark entry point
 │   ├── convert_to_mlx.py   # Diffusers-to-MLX conversion entry point
-│   ├── run_mlx_dit.py      # MLX INT4 generation entry point
+│   ├── run_mlx_dit.py      # MLX low-precision generation entry point
 │   ├── model_config_fetch.py # Model information entry point
 │   ├── mps_config_fetch.py # Mac hardware information entry point
 │   └── run_dit.py          # PyTorch generation entry point
@@ -260,6 +260,30 @@ model/mlx/DiT-XL-2-256-w4-g128/
 
 By default, 168 attention and FFN Linear layers are quantized. Use `--bits 8` for 8-bit weights or `--output-dir` to select another directory. Conversion only needs to be performed once.
 
+### Quantize Both Weights and Activations
+
+The project supports MLX's native `mx.qqmm`. Weights are stored in low precision in the checkpoint, while activations are dynamically quantized for each Linear call before the fused low-precision Metal matrix multiplication. DiT biases are added in floating point after `qqmm`.
+
+MXFP8 W8A8 with its required group size of 32:
+
+```bash
+uv run python src/convert_to_mlx.py --activation-quantization mxfp8
+uv run python src/run_mlx_dit.py \
+  --mlx-model-dir model/mlx/DiT-XL-2-256-mxfp8-w8a8 \
+  --class-label 281 --steps 25 --seed 42
+```
+
+NVFP4 W4A4 with its required group size of 16:
+
+```bash
+uv run python src/convert_to_mlx.py --activation-quantization nvfp4
+uv run python src/run_mlx_dit.py \
+  --mlx-model-dir model/mlx/DiT-XL-2-256-nvfp4-w4a4 \
+  --class-label 281 --steps 25 --seed 42
+```
+
+Both modes quantize 168 attention and FFN Linear layers by default. AdaNorm, embeddings, the final projection, and the VAE remain floating point. `--quantize-all-linears` and `--exclude-layer` can still change the scope.
+
 ### 2. Generate an Image with MLX
 
 ```bash
@@ -274,16 +298,18 @@ uv run python src/run_mlx_dit.py \
 On the M3 MacBook Air used for this project, with a 10-core GPU and 16 GB of unified memory, class 281, seed 42, and 25 inference steps produced these same-scope measurements:
 
 - PyTorch MPS FP16: approximately 6.02 seconds total.
-- MLX INT4 group-128: approximately 4.96 seconds for DiT denoising and 5.41 seconds total, with approximately 0.99 GB peak MLX memory.
+- MLX W4A16 group-128: approximately 5.01 seconds for DiT denoising and 5.45 seconds total, with approximately 0.99 GB peak MLX memory.
+- MLX MXFP8 W8A8: approximately 18.00 seconds for denoising and 18.52 seconds total, with approximately 1.21 GB peak MLX memory.
+- MLX NVFP4 W4A4: approximately 17.09 seconds for denoising and 17.49 seconds total, with approximately 1.01 GB peak MLX memory.
 - MLX with only the FFN quantized: approximately 5.55 seconds total, so attention and FFN quantization remains the default.
 
-Results vary with first-run compilation, temperature, and system load. Use warmups and compare the median of multiple runs for final performance decisions.
+Dynamic activation quantization through `mx.qqmm` does not accelerate this M3. Its overhead makes it about 3.2–3.4 times slower, so W4A16 remains the default. MXFP8 and NVFP4 are optional experimental paths to benchmark again on newer hardware with stronger low-precision throughput. Results vary with first-run compilation, temperature, and system load; use warmups and compare the median of multiple runs for final performance decisions.
 
 ### MLX Code Interfaces
 
 The MLX implementation separates model structure, operators, conversion, and runtime concerns:
 
-- `mlx_backend/operators.py`: calls `mx.quantized_matmul` and fused scaled dot-product attention.
+- `mlx_backend/operators.py`: calls `mx.quantized_matmul`, `mx.qqmm`, and fused scaled dot-product attention.
 - `mlx_backend/model.py`: implements PatchEmbed, AdaLayerNormZero, Attention, FFN, and the complete DiT Transformer.
 - `mlx_backend/conversion.py`: handles PyTorch OIHW to MLX OHWI conversion, parameter renaming, and checkpoint serialization.
 - `mlx_backend/pipeline.py`: implements classifier-free guidance, scheduler bridging, VAE decoding, and timing.
@@ -301,6 +327,21 @@ output = quantized_matmul(
     quantization_biases,
     bits=4,
     group_size=128,
+)
+```
+
+The weight-and-activation quantized operator interface is:
+
+```python
+from mac_dit.mlx_backend.operators import quantized_quantized_matmul
+
+output = quantized_quantized_matmul(
+    inputs,
+    packed_weight,
+    scales,
+    bits=4,
+    group_size=16,
+    mode="nvfp4",
 )
 ```
 

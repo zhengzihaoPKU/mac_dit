@@ -25,6 +25,31 @@ class MlxConfigTests(unittest.TestCase):
         self.assertTrue(config.matches("transformer_blocks.0.ff.proj"))
         self.assertFalse(config.matches("transformer_blocks.0.norm1.linear"))
 
+    def test_activation_quantization_modes(self):
+        mxfp8 = MlxQuantizationConfig(
+            bits=8,
+            group_size=32,
+            mode="mxfp8",
+            quantize_activations=True,
+        )
+        nvfp4 = MlxQuantizationConfig(
+            bits=4,
+            group_size=16,
+            mode="nvfp4",
+            quantize_activations=True,
+        )
+        self.assertEqual(mxfp8.label, "mlx-mxfp8-w8a8-g32")
+        self.assertEqual(nvfp4.label, "mlx-nvfp4-w4a4-g16")
+
+    def test_activation_quantization_rejects_invalid_shape(self):
+        with self.assertRaises(ValueError):
+            MlxQuantizationConfig(
+                bits=8,
+                group_size=128,
+                mode="mxfp8",
+                quantize_activations=True,
+            )
+
 
 class MlxRuntimeTests(unittest.TestCase):
     def setUp(self):
@@ -111,7 +136,66 @@ class MlxRuntimeTests(unittest.TestCase):
             self.assertEqual(len(manifest["quantized_layers"]), 6)
             self.assertTrue((Path(directory) / "dit.safetensors").is_file())
 
-        np.testing.assert_allclose(np.asarray(actual), np.asarray(expected), atol=0, rtol=0)
+        np.testing.assert_allclose(
+            np.asarray(actual),
+            np.asarray(expected),
+            atol=0,
+            rtol=0,
+        )
+
+    def test_activation_quantized_checkpoints_use_qqmm_and_keep_bias(self):
+        from mac_dit.mlx_backend.conversion import (
+            convert_transformer,
+            load_mlx_transformer,
+        )
+        from mac_dit.mlx_backend.operators import QuantizedActivationLinear
+
+        torch.manual_seed(23)
+        transformer = self.make_transformer(hidden_size=32)
+        sample = torch.randn(1, 4, 4, 4)
+        timesteps = torch.tensor([3])
+        labels = torch.tensor([1])
+        modes = (("mxfp8", 8, 32), ("nvfp4", 4, 16))
+        for mode, bits, group_size in modes:
+            with self.subTest(mode=mode), tempfile.TemporaryDirectory() as directory:
+                quantization = MlxQuantizationConfig(
+                    bits=bits,
+                    group_size=group_size,
+                    mode=mode,
+                    quantize_activations=True,
+                )
+                model, manifest = convert_transformer(
+                    transformer,
+                    directory,
+                    quantization=quantization,
+                )
+                first_linear = model.transformer_blocks[0].attn1.to_q
+                self.assertIsInstance(first_linear, QuantizedActivationLinear)
+                self.assertIn("bias", first_linear)
+
+                expected = model(
+                    self.mx.array(sample.numpy()),
+                    self.mx.array(timesteps.numpy()),
+                    self.mx.array(labels.numpy()),
+                )
+                loaded, loaded_manifest = load_mlx_transformer(directory)
+                actual = loaded(
+                    self.mx.array(sample.numpy()),
+                    self.mx.array(timesteps.numpy()),
+                    self.mx.array(labels.numpy()),
+                )
+                self.mx.eval(expected, actual)
+
+                self.assertEqual(len(manifest["quantized_layers"]), 6)
+                self.assertTrue(
+                    loaded_manifest["quantization"]["quantize_activations"]
+                )
+                np.testing.assert_allclose(
+                    np.asarray(actual),
+                    np.asarray(expected),
+                    atol=0,
+                    rtol=0,
+                )
 
 
 if __name__ == "__main__":

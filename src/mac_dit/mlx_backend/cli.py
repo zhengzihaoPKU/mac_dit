@@ -7,8 +7,25 @@ from .conversion import convert_pretrained
 from .pipeline import MlxGenerationConfig, generate_image
 
 
-def default_mlx_directory(cache_dir, *, bits=4, group_size=128):
-    return Path(cache_dir) / "mlx" / f"DiT-XL-2-256-w{bits}-g{group_size}"
+ACTIVATION_QUANTIZATION = {
+    "mxfp8": (8, 32),
+    "nvfp4": (4, 16),
+}
+
+
+def default_mlx_directory(
+    cache_dir,
+    *,
+    bits=4,
+    group_size=128,
+    activation_quantization=None,
+):
+    if activation_quantization:
+        bits, _ = ACTIVATION_QUANTIZATION[activation_quantization]
+        name = f"DiT-XL-2-256-{activation_quantization}-w{bits}a{bits}"
+    else:
+        name = f"DiT-XL-2-256-w{bits}-g{group_size}"
+    return Path(cache_dir) / "mlx" / name
 
 
 def build_convert_parser():
@@ -18,6 +35,11 @@ def build_convert_parser():
     parser.add_argument("--output-dir")
     parser.add_argument("--bits", type=int, choices=(4, 8), default=4)
     parser.add_argument("--group-size", type=int, default=128)
+    parser.add_argument(
+        "--activation-quantization",
+        choices=tuple(ACTIVATION_QUANTIZATION),
+        help="动态量化激活：mxfp8=W8A8，nvfp4=W4A4",
+    )
     parser.add_argument("--no-quantization", action="store_true")
     parser.add_argument("--quantize-all-linears", action="store_true")
     parser.add_argument("--exclude-layer", action="append", default=[])
@@ -25,12 +47,28 @@ def build_convert_parser():
 
 
 def convert_main(argv=None):
-    args = build_convert_parser().parse_args(argv)
+    parser = build_convert_parser()
+    args = parser.parse_args(argv)
+    if args.no_quantization and args.activation_quantization:
+        parser.error(
+            "--no-quantization 不能与 --activation-quantization 同时使用"
+        )
+
     quantization = None
     if not args.no_quantization:
+        bits = args.bits
+        group_size = args.group_size
+        mode = "affine"
+        quantize_activations = False
+        if args.activation_quantization:
+            mode = args.activation_quantization
+            bits, group_size = ACTIVATION_QUANTIZATION[mode]
+            quantize_activations = True
         quantization = MlxQuantizationConfig(
-            bits=args.bits,
-            group_size=args.group_size,
+            bits=bits,
+            group_size=group_size,
+            mode=mode,
+            quantize_activations=quantize_activations,
             include_patterns=() if args.quantize_all_linears else (".attn1.", ".ff."),
             exclude_patterns=tuple(args.exclude_layer),
         )
@@ -38,6 +76,7 @@ def convert_main(argv=None):
         args.cache_dir,
         bits=args.bits,
         group_size=args.group_size,
+        activation_quantization=args.activation_quantization,
     )
     if args.no_quantization and args.output_dir is None:
         output_dir = Path(args.cache_dir) / "mlx" / "DiT-XL-2-256-fp16"

@@ -48,24 +48,41 @@ class MlxDiTConfig:
 
 @dataclass(frozen=True, slots=True)
 class MlxQuantizationConfig:
-    """MLX 原生 weight-only 量化配置。"""
+    """MLX 原生权重量化或权重-激活量化配置。"""
 
     bits: int = 4
     group_size: int = 128
     mode: str = "affine"
+    quantize_activations: bool = False
     include_patterns: tuple[str, ...] = (".attn1.", ".ff.")
     exclude_patterns: tuple[str, ...] = ()
 
     def __post_init__(self):
-        if self.bits not in (4, 8):
-            raise ValueError("MLX DiT 当前只支持 4-bit 或 8-bit 权重量化")
-        if self.group_size <= 0 or self.group_size % 32 != 0:
-            raise ValueError("MLX group_size 必须是 32 的正整数倍")
-        if self.mode != "affine":
-            raise ValueError("MLX DiT 当前只支持 affine 量化")
+        if self.quantize_activations:
+            specifications = {
+                "mxfp8": (8, 32),
+                "nvfp4": (4, 16),
+            }
+            if self.mode not in specifications:
+                raise ValueError("激活量化仅支持 mxfp8 或 nvfp4")
+            expected = specifications[self.mode]
+            if (self.bits, self.group_size) != expected:
+                raise ValueError(
+                    f"{self.mode} 必须使用 bits={expected[0]}、"
+                    f"group_size={expected[1]}"
+                )
+        else:
+            if self.bits not in (4, 8):
+                raise ValueError("MLX DiT 当前只支持 4-bit 或 8-bit 权重量化")
+            if self.group_size <= 0 or self.group_size % 32 != 0:
+                raise ValueError("MLX group_size 必须是 32 的正整数倍")
+            if self.mode != "affine":
+                raise ValueError("weight-only 量化当前只支持 affine 模式")
 
     @property
     def label(self):
+        if self.quantize_activations:
+            return f"mlx-{self.mode}-w{self.bits}a{self.bits}-g{self.group_size}"
         return f"mlx-w{self.bits}a16-g{self.group_size}"
 
     def matches(self, path):
@@ -87,6 +104,7 @@ class MlxQuantizationConfig:
             bits=data["bits"],
             group_size=data["group_size"],
             mode=data.get("mode", "affine"),
+            quantize_activations=data.get("quantize_activations", False),
             include_patterns=tuple(data.get("include_patterns", ())),
             exclude_patterns=tuple(data.get("exclude_patterns", ())),
         )

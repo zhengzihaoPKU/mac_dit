@@ -33,6 +33,26 @@ def quantized_matmul(
     )
 
 
+def quantized_quantized_matmul(
+    inputs,
+    packed_weight,
+    scales,
+    *,
+    bits,
+    group_size,
+    mode,
+):
+    """调用 MLX 原生 QQMM，在算子内部动态量化激活和计算。"""
+    return mx.qqmm(
+        inputs,
+        packed_weight,
+        scales=scales,
+        group_size=group_size,
+        bits=bits,
+        mode=mode,
+    )
+
+
 class QuantizedLinear(nn.QuantizedLinear):
     """显式使用本项目 quantized_matmul 接口的 MLX Linear。"""
 
@@ -51,6 +71,33 @@ class QuantizedLinear(nn.QuantizedLinear):
         return outputs
 
 
+class QuantizedActivationLinear(nn.QQLinear):
+    """支持 bias 的 W8A8/W4A4 Linear；MLX QQMM 本身不处理 bias。"""
+
+    def __call__(self, inputs):
+        outputs = quantized_quantized_matmul(
+            inputs,
+            self.weight,
+            self.get("scales"),
+            bits=self.bits,
+            group_size=self.group_size,
+            mode=self.mode,
+        )
+        if "bias" in self:
+            outputs = outputs + self.bias
+        return outputs
+
+    @classmethod
+    def from_linear(cls, linear, *, group_size, bits, mode):
+        output_dims, input_dims = linear.weight.shape
+        module = cls(input_dims, output_dims, group_size, bits, mode=mode)
+        module.weight = linear.weight
+        if linear.get("bias") is not None:
+            module.bias = linear.bias
+        module.train(linear.training)
+        return module
+
+
 def quantize_linear_modules(model, config):
     """原地将匹配的 nn.Linear 替换为 MLX 原生量化 Linear。"""
     quantized_paths = []
@@ -58,7 +105,12 @@ def quantize_linear_modules(model, config):
     def replace(path, module):
         if isinstance(module, nn.Linear) and config.matches(path):
             quantized_paths.append(path)
-            return QuantizedLinear.from_linear(
+            linear_type = (
+                QuantizedActivationLinear
+                if config.quantize_activations
+                else QuantizedLinear
+            )
+            return linear_type.from_linear(
                 module,
                 group_size=config.group_size,
                 bits=config.bits,

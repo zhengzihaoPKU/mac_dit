@@ -34,7 +34,7 @@ mac_dit/
 │   ├── check_backend.py    # MPS 检查兼容入口
 │   ├── benchmark_quantization.py # 量化基准入口
 │   ├── convert_to_mlx.py   # Diffusers 权重转 MLX 入口
-│   ├── run_mlx_dit.py      # MLX INT4 图片生成入口
+│   ├── run_mlx_dit.py      # MLX 低精度图片生成入口
 │   ├── model_config_fetch.py # 模型信息兼容入口
 │   ├── mps_config_fetch.py # Mac 硬件信息兼容入口
 │   └── run_dit.py          # 图片生成兼容入口
@@ -261,6 +261,30 @@ model/mlx/DiT-XL-2-256-w4-g128/
 
 默认量化 168 个 attention/FFN Linear。也可以使用 `--bits 8`，或者通过 `--output-dir` 指定其他目录。转换只需执行一次。
 
+### 权重和激活同时量化
+
+项目支持 MLX 原生 `mx.qqmm`：权重在 checkpoint 中以低精度保存，激活在每次 Linear 计算时动态量化，然后由融合的低精度 Metal 算子完成矩阵乘法。DiT 中的 bias 在 `qqmm` 之后以浮点相加。
+
+MXFP8 W8A8（固定 group size 32）：
+
+```bash
+uv run python src/convert_to_mlx.py --activation-quantization mxfp8
+uv run python src/run_mlx_dit.py \
+  --mlx-model-dir model/mlx/DiT-XL-2-256-mxfp8-w8a8 \
+  --class-label 281 --steps 25 --seed 42
+```
+
+NVFP4 W4A4（固定 group size 16）：
+
+```bash
+uv run python src/convert_to_mlx.py --activation-quantization nvfp4
+uv run python src/run_mlx_dit.py \
+  --mlx-model-dir model/mlx/DiT-XL-2-256-nvfp4-w4a4 \
+  --class-label 281 --steps 25 --seed 42
+```
+
+两种模式默认都量化 168 个 attention/FFN Linear，AdaNorm、embedding、最终投影和 VAE 保持浮点。可以继续使用 `--quantize-all-linears` 或 `--exclude-layer` 调整范围。
+
 ### 2. 使用 MLX 生成图片
 
 ```bash
@@ -275,16 +299,18 @@ uv run python src/run_mlx_dit.py \
 在本项目的 M3 MacBook Air（10 核 GPU、16 GB 内存）上，以类别 281、seed 42、25 步进行同口径测试：
 
 - PyTorch MPS FP16：总推理约 6.02 秒。
-- MLX INT4 group-128：DiT 去噪约 4.96 秒，总推理约 5.41 秒，MLX 峰值约 0.99 GB。
+- MLX W4A16 group-128：DiT 去噪约 5.01 秒，总推理约 5.45 秒，MLX 峰值约 0.99 GB。
+- MLX MXFP8 W8A8：DiT 去噪约 18.00 秒，总推理约 18.52 秒，MLX 峰值约 1.21 GB。
+- MLX NVFP4 W4A4：DiT 去噪约 17.09 秒，总推理约 17.49 秒，MLX 峰值约 1.01 GB。
 - MLX 只量化 FFN：总推理约 5.55 秒，因此默认仍量化 attention 和 FFN。
 
-单次运行会受首次编译、温度和系统负载影响，请使用多次 warmup 后的中位数评价最终性能。
+这台 M3 上的 `mx.qqmm` 动态激活量化没有带来加速，开销反而使其约慢 3.2–3.4 倍，因此默认仍是 W4A16。MXFP8/NVFP4 作为可选实验路径，适合在具有相应低精度硬件吞吐的新设备上重新基准测试。单次运行会受首次编译、温度和系统负载影响，请使用多次 warmup 后的中位数评价最终性能。
 
 ### 代码接口
 
 MLX 代码按职责拆分：
 
-- `mlx_backend/operators.py`：真正调用 `mx.quantized_matmul` 和 fused attention 的算子层。
+- `mlx_backend/operators.py`：真正调用 `mx.quantized_matmul`、`mx.qqmm` 和 fused attention 的算子层。
 - `mlx_backend/model.py`：PatchEmbed、AdaLayerNormZero、Attention、FFN 和完整 DiT 网络。
 - `mlx_backend/conversion.py`：PyTorch OIHW→MLX OHWI 转置、参数重命名和 checkpoint 保存/加载。
 - `mlx_backend/pipeline.py`：classifier-free guidance、scheduler 桥接、VAE 解码和计时。
@@ -302,6 +328,21 @@ output = quantized_matmul(
     quantization_biases,
     bits=4,
     group_size=128,
+)
+```
+
+权重与激活同时量化的算子接口：
+
+```python
+from mac_dit.mlx_backend.operators import quantized_quantized_matmul
+
+output = quantized_quantized_matmul(
+    inputs,
+    packed_weight,
+    scales,
+    bits=4,
+    group_size=16,
+    mode="nvfp4",
 )
 ```
 

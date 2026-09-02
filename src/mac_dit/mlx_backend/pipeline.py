@@ -15,6 +15,7 @@ from diffusers import AutoencoderKL, DPMSolverMultistepScheduler
 from diffusers.image_processor import VaeImageProcessor
 
 from ..config import DEFAULT_CACHE_DIR, DEFAULT_MODEL_ID, DEFAULT_OUTPUT_DIR
+from .config import MlxQuantizationConfig
 from .conversion import load_mlx_transformer
 
 
@@ -161,12 +162,14 @@ def generate_image(config):
 
     config.output_dir.mkdir(parents=True, exist_ok=True)
     quantization = manifest.get("quantization")
-    precision = (
-        f"mlx-w{quantization['bits']}a16-g{quantization['group_size']}"
-        f"-q{len(manifest.get('quantized_layers', ()))}"
-        if quantization
-        else "mlx-fp16"
-    )
+    if quantization:
+        quantization_config = MlxQuantizationConfig.from_dict(quantization)
+        precision = (
+            f"{quantization_config.label}"
+            f"-q{len(manifest.get('quantized_layers', ()))}"
+        )
+    else:
+        precision = "mlx-fp16"
     output_path = config.output_dir / (
         f"dit_generated_image_{config.class_label}_{precision}_seed{config.seed}.png"
     )

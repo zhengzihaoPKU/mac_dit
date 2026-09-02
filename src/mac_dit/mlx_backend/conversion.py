@@ -93,6 +93,7 @@ def convert_transformer(transformer, output_dir, *, quantization=None, model_id=
     config = MlxDiTConfig.from_diffusers_config(transformer.config)
     model = MlxDiT(config)
     model.load_weights(diffusers_weight_mapping(transformer), strict=True)
+    model.eval()
     mx.eval(model.parameters())
 
     quantized_paths = ()
@@ -149,6 +150,7 @@ def load_mlx_transformer(directory):
 
     config = MlxDiTConfig(**manifest["model"])
     model = MlxDiT(config)
+    model.eval()
     quantization_data = manifest.get("quantization")
     if quantization_data:
         quantization = MlxQuantizationConfig.from_dict(quantization_data)

@@ -23,3 +23,11 @@ uv run python src/run_dit.py \
 ```
 
 上面的命令默认写入 `model/quantized/DiT-XL-2-256-int4-g128/`。量化 checkpoint 同样不会上传到 GitHub。
+
+MLX 转换后的权重保存在独立的 `model/mlx/` 目录：
+
+```bash
+uv run python src/convert_to_mlx.py --bits 4 --group-size 128
+```
+
+默认输出为 `model/mlx/DiT-XL-2-256-w4-g128/`，其中包含 `dit.safetensors` 和 `mlx_config.json`。

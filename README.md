@@ -1,5 +1,7 @@
 # mac_dit
 
+**中文** | [English](README_EN.md)
+
 在 Apple Silicon Mac 上使用 PyTorch MPS 和 Hugging Face Diffusers 运行
 `facebook/DiT-XL-2-256`，根据 ImageNet 类别生成 256×256 图片。
 
@@ -27,9 +29,12 @@ mac_dit/
 │   │   ├── model_info.py   # DiT 模型信息统计
 │   │   ├── pipeline.py     # 模型加载、推理和图片保存
 │   │   ├── benchmark.py    # 量化性能基准
+│   │   ├── mlx_backend/    # MLX DiT、QMM 算子、转换和生成管线
 │   │   └── quantization/   # 量化算法、模块、后端与序列化
 │   ├── check_backend.py    # MPS 检查兼容入口
 │   ├── benchmark_quantization.py # 量化基准入口
+│   ├── convert_to_mlx.py   # Diffusers 权重转 MLX 入口
+│   ├── run_mlx_dit.py      # MLX INT4 图片生成入口
 │   ├── model_config_fetch.py # 模型信息兼容入口
 │   ├── mps_config_fetch.py # Mac 硬件信息兼容入口
 │   └── run_dit.py          # 图片生成兼容入口
@@ -59,7 +64,7 @@ bash scripts/step1_uv_install.sh
 
 ```bash
 uv venv
-uv pip install torch diffusers transformers accelerate Pillow huggingface_hub safetensors
+uv pip install torch diffusers transformers accelerate Pillow huggingface_hub safetensors mlx
 ```
 
 如需激活虚拟环境，请根据当前 Shell 选择命令：
@@ -235,6 +240,90 @@ uv run python src/run_dit.py \
 ```
 
 该后端通过 `torch.mps.compile_shader` 调用自定义 W8A16/W4A16 Linear。算子直接读取 INT8 或打包 INT4 权重，在乘法循环中应用 scale，不会先生成完整 FP16 权重矩阵；激活保持 FP16，累加使用 FP32。当前实现是正确性优先的基础 kernel，尚未加入矩阵分块、SIMD 协作和线程组缓存等性能优化，需要支持 `torch.mps.compile_shader` 的 PyTorch 和可用的 MPS 环境。环境不满足条件时，请使用默认的 `reference` 后端。
+
+## MLX 加速后端
+
+MLX 后端是推荐的低比特加速路径。它不会逐层在 PyTorch 与 MLX 之间转换数据，而是让完整的 28 层 DiT Transformer 留在 MLX/Metal 中执行。只有每个扩散步骤结束后，尺寸很小的 latent 会交给 CPU scheduler；VAE 最终只解码一次。
+
+### 1. 转换并量化权重
+
+```bash
+uv run python src/convert_to_mlx.py --bits 4 --group-size 128
+```
+
+默认生成：
+
+```text
+model/mlx/DiT-XL-2-256-w4-g128/
+├── dit.safetensors  # MLX FP16 与打包 INT4 参数
+└── mlx_config.json  # 网络结构、量化参数和量化层列表
+```
+
+默认量化 168 个 attention/FFN Linear。也可以使用 `--bits 8`，或者通过 `--output-dir` 指定其他目录。转换只需执行一次。
+
+### 2. 使用 MLX 生成图片
+
+```bash
+uv run python src/run_mlx_dit.py \
+  --class-label 281 \
+  --steps 25 \
+  --seed 42
+```
+
+默认启用 `mx.compile`。首次运行需要编译计算图，后续运行会更快；排查问题时可添加 `--no-compile`。
+
+在本项目的 M3 MacBook Air（10 核 GPU、16 GB 内存）上，以类别 281、seed 42、25 步进行同口径测试：
+
+- PyTorch MPS FP16：总推理约 6.02 秒。
+- MLX INT4 group-128：DiT 去噪约 4.96 秒，总推理约 5.41 秒，MLX 峰值约 0.99 GB。
+- MLX 只量化 FFN：总推理约 5.55 秒，因此默认仍量化 attention 和 FFN。
+
+单次运行会受首次编译、温度和系统负载影响，请使用多次 warmup 后的中位数评价最终性能。
+
+### 代码接口
+
+MLX 代码按职责拆分：
+
+- `mlx_backend/operators.py`：真正调用 `mx.quantized_matmul` 和 fused attention 的算子层。
+- `mlx_backend/model.py`：PatchEmbed、AdaLayerNormZero、Attention、FFN 和完整 DiT 网络。
+- `mlx_backend/conversion.py`：PyTorch OIHW→MLX OHWI 转置、参数重命名和 checkpoint 保存/加载。
+- `mlx_backend/pipeline.py`：classifier-free guidance、scheduler 桥接、VAE 解码和计时。
+- `mlx_backend/cli.py`：转换与推理命令行接口。
+
+核心量化算子接口：
+
+```python
+from mac_dit.mlx_backend.operators import quantized_matmul
+
+output = quantized_matmul(
+    inputs,
+    packed_weight,
+    scales,
+    quantization_biases,
+    bits=4,
+    group_size=128,
+)
+```
+
+完整模型接口：
+
+```python
+noise_and_sigma = model(
+    sample,        # [B, 4, 32, 32]，NCHW FP16
+    timesteps,     # [B]
+    class_labels,  # [B]，空类别为 1000
+)
+```
+
+加载已有 checkpoint：
+
+```python
+from mac_dit.mlx_backend.conversion import load_mlx_transformer
+
+model, manifest = load_mlx_transformer(
+    "model/mlx/DiT-XL-2-256-w4-g128"
+)
+```
 
 ## 调整生成参数
 

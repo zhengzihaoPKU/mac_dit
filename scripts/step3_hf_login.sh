@@ -1,1 +1,0 @@
-uv run hf auth login

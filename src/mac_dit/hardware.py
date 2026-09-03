@@ -104,6 +104,15 @@ def _format_cpu_cores(cpu_description):
     return cpu_description
 
 
+def _supports_metal(display):
+    """兼容 system_profiler 新旧版本的 Metal 支持字段。"""
+    status = display.get("spdisplays_metal")
+    family = display.get("spdisplays_mtlgpufamilysupport", "")
+    return status == "spdisplays_supported" or family.startswith(
+        "spdisplays_metal"
+    )
+
+
 def fetch_mps_config():
     """获取 Mac 硬件、GPU 和 PyTorch MPS 配置。"""
     profile = _get_system_profile()
@@ -132,9 +141,7 @@ def fetch_mps_config():
                 "cores": display.get("sppci_cores", "未知"),
                 "vram": display.get("spdisplays_vram")
                 or display.get("spdisplays_vram_shared"),
-                "metal_supported": (
-                    display.get("spdisplays_metal") == "spdisplays_supported"
-                ),
+                "metal_supported": _supports_metal(display),
             }
         )
 

@@ -21,28 +21,25 @@ mac_dit/
 ├── model/                  # Hugging Face 模型缓存
 ├── scripts/                # 环境安装、登录和检查脚本
 ├── src/
-│   ├── mac_dit/            # 可复用的核心模块
-│   │   ├── cli.py          # 命令行参数和主流程
-│   │   ├── config.py       # 统一配置和默认值
-│   │   ├── formatting.py   # 内存与参数量格式化
-│   │   ├── hardware.py     # Mac、GPU 和 MPS 信息
-│   │   ├── model_info.py   # DiT 模型信息统计
-│   │   ├── pipeline.py     # 模型加载、推理和图片保存
-│   │   ├── benchmark.py    # 量化性能基准
-│   │   ├── mlx_backend/    # MLX DiT、QMM 算子、转换和生成管线
-│   │   └── quantization/   # 量化算法、模块、后端与序列化
-│   ├── check_backend.py    # MPS 检查兼容入口
-│   ├── benchmark_quantization.py # 量化基准入口
-│   ├── convert_to_mlx.py   # Diffusers 权重转 MLX 入口
-│   ├── run_mlx_dit.py      # MLX 低精度图片生成入口
-│   ├── model_config_fetch.py # 模型信息兼容入口
-│   ├── mps_config_fetch.py # Mac 硬件信息兼容入口
-│   └── run_dit.py          # 图片生成兼容入口
+│   ├── main.py               # 所有功能的统一命令行入口
+│   └── mac_dit/               # 可复用核心包
+│       ├── app.py             # 子命令调度与延迟导入
+│       ├── cli.py             # PyTorch 生成参数
+│       ├── pipeline.py        # PyTorch 加载与推理
+│       ├── hardware.py        # Mac、GPU 和 MPS 信息
+│       ├── mlx_backend/       # MLX 模型、算子、转换与推理
+│       └── quantization/      # PyTorch 量化算法、算子与序列化
 ├── .venv/                  # 本地 Python 虚拟环境
 └── .gitignore
 ```
 
 `model/` 和 `.venv/` 中只有说明文件会提交到 Git，模型权重、缓存和虚拟环境文件均会被忽略。
+
+所有命令都从一个入口调用：
+
+```bash
+uv run python src/main.py --help
+```
 
 ## 快速开始
 
@@ -54,10 +51,10 @@ mac_dit/
 brew install uv
 ```
 
-也可以运行：
+也可以用一个脚本安装 uv、创建虚拟环境并安装全部依赖：
 
 ```bash
-bash scripts/step1_uv_install.sh
+bash scripts/setup.sh
 ```
 
 ### 2. 创建虚拟环境并安装依赖
@@ -77,58 +74,40 @@ source .venv/bin/activate
 source .venv/bin/activate.fish
 ```
 
-`scripts/step2_env_setup.sh` 使用 fish 的激活脚本，适合在 fish 中执行：
-
-```fish
-source scripts/step2_env_setup.sh
-```
-
 ### 3. 登录 Hugging Face
 
 ```bash
 uv run hf auth login
 ```
 
-也可以运行：
-
-```bash
-bash scripts/step3_hf_login.sh
-```
-
 ### 4. 检查 MPS
 
 ```bash
-uv run python src/check_backend.py
-```
-
-也可以运行：
-
-```bash
-bash scripts/step4_check_backend.sh
+uv run python src/main.py check
 ```
 
 查看完整的 Mac、GPU 和 MPS 信息：
 
 ```bash
-uv run python src/mps_config_fetch.py
+uv run python src/main.py hardware
 ```
 
 查看 DiT 模型的参数量、数据类型和估算内存：
 
 ```bash
-uv run python src/model_config_fetch.py
+uv run python src/main.py model-info
 ```
 
 ### 5. 生成图片
 
 ```bash
-uv run python src/run_dit.py
+uv run python src/main.py generate
 ```
 
 也可以直接传入类别和推理步数，例如生成虎斑猫：
 
 ```bash
-uv run python src/run_dit.py --class-label 281 --steps 25 --seed 42
+uv run python src/main.py generate --class-label 281 --steps 25 --seed 42
 ```
 
 首次运行时会从 Hugging Face 下载模型，所需时间取决于网络速度。模型缓存在 `model/`，生成结果保存为：
@@ -144,7 +123,7 @@ image/dit_generated_image_<类别编号>_<精度>_seed<种子>.png
 ### INT8 W8A16
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --class-label 281 \
   --seed 42 \
   --quantization int8
@@ -155,7 +134,7 @@ INT8 使用 per-output-channel 对称量化，激活保持 FP16。
 ### INT4 W4A16
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --class-label 281 \
   --seed 42 \
   --quantization int4 \
@@ -169,13 +148,13 @@ INT4 使用 group-wise 对称量化，并将两个 INT4 权重打包到一个字
 量化全部 Linear：
 
 ```bash
-uv run python src/run_dit.py --quantization int8 --quantize-all-linears
+uv run python src/main.py generate --quantization int8 --quantize-all-linears
 ```
 
 按模块名称排除敏感层：
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int8 \
   --exclude-layer transformer_blocks.0 \
   --exclude-layer transformer_blocks.27
@@ -186,23 +165,23 @@ uv run python src/run_dit.py \
 ```bash
 # 只量化并保存，不生成图片。默认保存到：
 # model/quantized/DiT-XL-2-256-int4-g128/
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 \
   --group-size 128 \
   --quantize-only
 
 # 也可以显式指定目录
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 \
   --quantize-only \
   --save-quantized ./model/quantized/my-dit-int4
 
 # 直接加载已保存的量化 Transformer
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128
 
 # 使用另一个后端加载同一份量化权重
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128 \
   --quant-backend metal
 ```
@@ -215,17 +194,17 @@ uv run python src/run_dit.py \
 
 ```bash
 # FP16
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 --warmup 1 --repeats 3
 
 # INT8
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 \
   --quantization int8 --warmup 1 --repeats 3 \
   --json ./benchmark-int8.json
 
 # INT4
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 \
   --quantization int4 --group-size 128 --warmup 1 --repeats 3
 ```
@@ -235,7 +214,7 @@ uv run python src/benchmark_quantization.py \
 也可以启用实验性的 Metal 后端：
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 --quant-backend metal
 ```
 
@@ -248,7 +227,7 @@ MLX 后端是推荐的低比特加速路径。它不会逐层在 PyTorch 与 MLX
 ### 1. 转换并量化权重
 
 ```bash
-uv run python src/convert_to_mlx.py --bits 4 --group-size 128
+uv run python src/main.py mlx-convert --bits 4 --group-size 128
 ```
 
 默认生成：
@@ -268,8 +247,8 @@ model/mlx/DiT-XL-2-256-w4-g128/
 MXFP8 W8A8（固定 group size 32）：
 
 ```bash
-uv run python src/convert_to_mlx.py --activation-quantization mxfp8
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-convert --activation-quantization mxfp8
+uv run python src/main.py mlx-generate \
   --mlx-model-dir model/mlx/DiT-XL-2-256-mxfp8-w8a8 \
   --class-label 281 --steps 25 --seed 42
 ```
@@ -277,8 +256,8 @@ uv run python src/run_mlx_dit.py \
 NVFP4 W4A4（固定 group size 16）：
 
 ```bash
-uv run python src/convert_to_mlx.py --activation-quantization nvfp4
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-convert --activation-quantization nvfp4
+uv run python src/main.py mlx-generate \
   --mlx-model-dir model/mlx/DiT-XL-2-256-nvfp4-w4a4 \
   --class-label 281 --steps 25 --seed 42
 ```
@@ -288,7 +267,7 @@ uv run python src/run_mlx_dit.py \
 ### 2. 使用 MLX 生成图片
 
 ```bash
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-generate \
   --class-label 281 \
   --steps 25 \
   --seed 42
@@ -296,15 +275,22 @@ uv run python src/run_mlx_dit.py \
 
 默认启用 `mx.compile`。首次运行需要编译计算图，后续运行会更快；排查问题时可添加 `--no-compile`。
 
-在本项目的 M3 MacBook Air（10 核 GPU、16 GB 内存）上，以类别 281、seed 42、25 步进行同口径测试：
+### 实测速度对比
 
-- PyTorch MPS FP16：总推理约 6.02 秒。
-- MLX W4A16 group-128：DiT 去噪约 5.01 秒，总推理约 5.45 秒，MLX 峰值约 0.99 GB。
-- MLX MXFP8 W8A8：DiT 去噪约 18.00 秒，总推理约 18.52 秒，MLX 峰值约 1.21 GB。
-- MLX NVFP4 W4A4：DiT 去噪约 17.09 秒，总推理约 17.49 秒，MLX 峰值约 1.01 GB。
-- MLX 只量化 FFN：总推理约 5.55 秒，因此默认仍量化 attention 和 FFN。
+测试设备为 M3 MacBook Air（10 核 GPU、16 GB 统一内存），统一使用类别 281、seed 42 和 25 个推理步。总耗时包含 DiT 去噪和最后一次 VAE 解码，不包含模型加载与 checkpoint 转换。“相对 FP16 速度”越大越快。
 
-这台 M3 上的 `mx.qqmm` 动态激活量化没有带来加速，开销反而使其约慢 3.2–3.4 倍，因此默认仍是 W4A16。MXFP8/NVFP4 作为可选实验路径，适合在具有相应低精度硬件吞吐的新设备上重新基准测试。单次运行会受首次编译、温度和系统负载影响，请使用多次 warmup 后的中位数评价最终性能。
+| 排名 | 运行方式 | 权重 / 激活 | 总耗时 | 相对 FP16 速度 |
+| ---: | --- | --- | ---: | ---: |
+| 1 | MLX QMM（attention + FFN，默认） | INT4 / FP16 | **5.45 秒** | **1.10×** |
+| 2 | MLX QMM（只量化 FFN） | INT4 / FP16 | 5.55 秒 | 1.08× |
+| 3 | PyTorch MPS 基线 | FP16 / FP16 | 6.02 秒 | 1.00× |
+| 4 | PyTorch reference | INT8 / FP16 | 8.59 秒 | 0.70× |
+| 5 | PyTorch reference | INT4 / FP16 | 11.23 秒 | 0.54× |
+| 6 | MLX QQMM NVFP4 | FP4 / FP4 | 17.49 秒 | 0.34× |
+| 7 | MLX QQMM MXFP8 | FP8 / FP8 | 18.52 秒 | 0.33× |
+| 8 | PyTorch 自定义 Metal 基础 kernel | INT4 / FP16 | 232.62 秒 | 0.03× |
+
+结论：这台 M3 上最快的方案是 MLX W4A16，相对 PyTorch FP16 约提速 10%，峰值 MLX 内存约 0.99 GB。`mx.qqmm` 的 W8A8/W4A4 需要动态量化激活，在 M3 上没有速度收益。自定义 Metal kernel 是为了展示直接读取打包 INT4 的算子接口，尚未做分块和 SIMD 优化，不适合实际推理。单次结果会受编译、温度和系统负载影响，正式比较建议加入 warmup 并取多次中位数。
 
 ### 代码接口
 
@@ -368,7 +354,7 @@ model, manifest = load_mlx_transformer(
 
 ## 调整生成参数
 
-运行 `src/run_dit.py --help` 可以查看全部参数。常用参数包括：
+运行 `src/main.py generate --help` 或 `src/main.py mlx-generate --help` 可以查看全部参数。常用参数包括：
 
 - `--class-label`：ImageNet 类别编号，`281` 表示虎斑猫。
 - `--steps`：推理步数，步数越多通常耗时越长。

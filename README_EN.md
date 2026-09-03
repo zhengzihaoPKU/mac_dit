@@ -20,28 +20,25 @@ mac_dit/
 ├── model/                  # Model caches and quantized checkpoints
 ├── scripts/                # Setup, conversion, and run scripts
 ├── src/
-│   ├── mac_dit/            # Reusable core package
-│   │   ├── cli.py          # PyTorch command-line interface
-│   │   ├── config.py       # Shared configuration and defaults
-│   │   ├── formatting.py   # Memory and parameter formatting
-│   │   ├── hardware.py     # Mac GPU and MPS information
-│   │   ├── model_info.py   # DiT model statistics
-│   │   ├── pipeline.py     # PyTorch loading and generation
-│   │   ├── benchmark.py    # Quantization benchmarks
-│   │   ├── mlx_backend/    # MLX model, QMM operators, conversion, and pipeline
-│   │   └── quantization/   # PyTorch quantization algorithms and backends
-│   ├── check_backend.py    # MPS availability check
-│   ├── benchmark_quantization.py # Quantization benchmark entry point
-│   ├── convert_to_mlx.py   # Diffusers-to-MLX conversion entry point
-│   ├── run_mlx_dit.py      # MLX low-precision generation entry point
-│   ├── model_config_fetch.py # Model information entry point
-│   ├── mps_config_fetch.py # Mac hardware information entry point
-│   └── run_dit.py          # PyTorch generation entry point
+│   ├── main.py               # Unified command-line entry point
+│   └── mac_dit/               # Reusable core package
+│       ├── app.py             # Subcommand dispatch and lazy imports
+│       ├── cli.py             # PyTorch generation arguments
+│       ├── pipeline.py        # PyTorch loading and inference
+│       ├── hardware.py        # Mac GPU and MPS information
+│       ├── mlx_backend/       # MLX model, operators, conversion, and inference
+│       └── quantization/      # PyTorch quantization algorithms and operators
 ├── .venv/                  # Local Python virtual environment
 └── .gitignore
 ```
 
 Only documentation files inside `model/` and `.venv/` are committed. Downloaded weights, caches, converted checkpoints, and virtual-environment files are ignored by Git.
+
+Every operation is available from one entry point:
+
+```bash
+uv run python src/main.py --help
+```
 
 ## Quick Start
 
@@ -53,10 +50,10 @@ Run these commands from the project root.
 brew install uv
 ```
 
-Or run:
+Or install uv, create the virtual environment, and install every dependency with one script:
 
 ```bash
-bash scripts/step1_uv_install.sh
+bash scripts/setup.sh
 ```
 
 ### 2. Create the Environment and Install Dependencies
@@ -76,58 +73,40 @@ source .venv/bin/activate
 source .venv/bin/activate.fish
 ```
 
-`scripts/step2_env_setup.sh` uses the fish activation script and should be sourced from fish:
-
-```fish
-source scripts/step2_env_setup.sh
-```
-
 ### 3. Sign In to Hugging Face
 
 ```bash
 uv run hf auth login
 ```
 
-Or run:
-
-```bash
-bash scripts/step3_hf_login.sh
-```
-
 ### 4. Check MPS
 
 ```bash
-uv run python src/check_backend.py
-```
-
-Or run:
-
-```bash
-bash scripts/step4_check_backend.sh
+uv run python src/main.py check
 ```
 
 Display complete Mac, GPU, and MPS information:
 
 ```bash
-uv run python src/mps_config_fetch.py
+uv run python src/main.py hardware
 ```
 
 Display DiT parameter counts, dtypes, and estimated memory usage:
 
 ```bash
-uv run python src/model_config_fetch.py
+uv run python src/main.py model-info
 ```
 
 ### 5. Generate an Image with PyTorch MPS
 
 ```bash
-uv run python src/run_dit.py
+uv run python src/main.py generate
 ```
 
 For example, generate an ImageNet tabby cat with 25 inference steps:
 
 ```bash
-uv run python src/run_dit.py --class-label 281 --steps 25 --seed 42
+uv run python src/main.py generate --class-label 281 --steps 25 --seed 42
 ```
 
 The model is downloaded from Hugging Face on the first run and cached under `model/`. Generated images use this naming convention:
@@ -143,7 +122,7 @@ The PyTorch path provides INT8 and INT4 weight-only quantization. By default, on
 ### INT8 W8A16
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --class-label 281 \
   --seed 42 \
   --quantization int8
@@ -154,7 +133,7 @@ INT8 uses symmetric per-output-channel weight quantization with FP16 activations
 ### INT4 W4A16
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --class-label 281 \
   --seed 42 \
   --quantization int4 \
@@ -168,13 +147,13 @@ INT4 uses symmetric group-wise quantization and packs two INT4 values into one b
 Quantize every Linear layer:
 
 ```bash
-uv run python src/run_dit.py --quantization int8 --quantize-all-linears
+uv run python src/main.py generate --quantization int8 --quantize-all-linears
 ```
 
 Exclude sensitive modules by name:
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int8 \
   --exclude-layer transformer_blocks.0 \
   --exclude-layer transformer_blocks.27
@@ -185,23 +164,23 @@ uv run python src/run_dit.py \
 ```bash
 # Quantize and save without generating an image. Default destination:
 # model/quantized/DiT-XL-2-256-int4-g128/
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 \
   --group-size 128 \
   --quantize-only
 
 # Or specify a destination explicitly
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 \
   --quantize-only \
   --save-quantized ./model/quantized/my-dit-int4
 
 # Load a saved quantized Transformer
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128
 
 # Load the same weights with another execution backend
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --load-quantized ./model/quantized/DiT-XL-2-256-int4-g128 \
   --quant-backend metal
 ```
@@ -214,17 +193,17 @@ Use the same class, seed, scheduler, and number of steps for FP16, INT8, and INT
 
 ```bash
 # FP16
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 --warmup 1 --repeats 3
 
 # INT8
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 \
   --quantization int8 --warmup 1 --repeats 3 \
   --json ./benchmark-int8.json
 
 # INT4
-uv run python src/benchmark_quantization.py \
+uv run python src/main.py benchmark \
   --class-label 281 --seed 42 --steps 25 \
   --quantization int4 --group-size 128 --warmup 1 --repeats 3
 ```
@@ -234,7 +213,7 @@ The `reference` backend dequantizes weights before each Linear call and then inv
 An experimental custom Metal backend is also available:
 
 ```bash
-uv run python src/run_dit.py \
+uv run python src/main.py generate \
   --quantization int4 --quant-backend metal
 ```
 
@@ -247,7 +226,7 @@ MLX is the recommended low-bit execution path. The complete 28-layer DiT Transfo
 ### 1. Convert and Quantize the Weights
 
 ```bash
-uv run python src/convert_to_mlx.py --bits 4 --group-size 128
+uv run python src/main.py mlx-convert --bits 4 --group-size 128
 ```
 
 The default output is:
@@ -267,8 +246,8 @@ The project supports MLX's native `mx.qqmm`. Weights are stored in low precision
 MXFP8 W8A8 with its required group size of 32:
 
 ```bash
-uv run python src/convert_to_mlx.py --activation-quantization mxfp8
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-convert --activation-quantization mxfp8
+uv run python src/main.py mlx-generate \
   --mlx-model-dir model/mlx/DiT-XL-2-256-mxfp8-w8a8 \
   --class-label 281 --steps 25 --seed 42
 ```
@@ -276,8 +255,8 @@ uv run python src/run_mlx_dit.py \
 NVFP4 W4A4 with its required group size of 16:
 
 ```bash
-uv run python src/convert_to_mlx.py --activation-quantization nvfp4
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-convert --activation-quantization nvfp4
+uv run python src/main.py mlx-generate \
   --mlx-model-dir model/mlx/DiT-XL-2-256-nvfp4-w4a4 \
   --class-label 281 --steps 25 --seed 42
 ```
@@ -287,7 +266,7 @@ Both modes quantize 168 attention and FFN Linear layers by default. AdaNorm, emb
 ### 2. Generate an Image with MLX
 
 ```bash
-uv run python src/run_mlx_dit.py \
+uv run python src/main.py mlx-generate \
   --class-label 281 \
   --steps 25 \
   --seed 42
@@ -295,15 +274,22 @@ uv run python src/run_mlx_dit.py \
 
 `mx.compile` is enabled by default. The first run compiles the computation graph, while later runs are faster. Add `--no-compile` when debugging.
 
-On the M3 MacBook Air used for this project, with a 10-core GPU and 16 GB of unified memory, class 281, seed 42, and 25 inference steps produced these same-scope measurements:
+### Measured Speed Comparison
 
-- PyTorch MPS FP16: approximately 6.02 seconds total.
-- MLX W4A16 group-128: approximately 5.01 seconds for DiT denoising and 5.45 seconds total, with approximately 0.99 GB peak MLX memory.
-- MLX MXFP8 W8A8: approximately 18.00 seconds for denoising and 18.52 seconds total, with approximately 1.21 GB peak MLX memory.
-- MLX NVFP4 W4A4: approximately 17.09 seconds for denoising and 17.49 seconds total, with approximately 1.01 GB peak MLX memory.
-- MLX with only the FFN quantized: approximately 5.55 seconds total, so attention and FFN quantization remains the default.
+These measurements use an M3 MacBook Air with a 10-core GPU and 16 GB of unified memory. Every mode uses class 281, seed 42, and 25 inference steps. Total latency includes DiT denoising and the final VAE decode, but excludes model loading and checkpoint conversion. Higher relative FP16 throughput is better.
 
-Dynamic activation quantization through `mx.qqmm` does not accelerate this M3. Its overhead makes it about 3.2–3.4 times slower, so W4A16 remains the default. MXFP8 and NVFP4 are optional experimental paths to benchmark again on newer hardware with stronger low-precision throughput. Results vary with first-run compilation, temperature, and system load; use warmups and compare the median of multiple runs for final performance decisions.
+| Rank | Execution path | Weight / activation | Total latency | Relative FP16 throughput |
+| ---: | --- | --- | ---: | ---: |
+| 1 | MLX QMM, attention + FFN (default) | INT4 / FP16 | **5.45 s** | **1.10×** |
+| 2 | MLX QMM, FFN only | INT4 / FP16 | 5.55 s | 1.08× |
+| 3 | PyTorch MPS baseline | FP16 / FP16 | 6.02 s | 1.00× |
+| 4 | PyTorch reference | INT8 / FP16 | 8.59 s | 0.70× |
+| 5 | PyTorch reference | INT4 / FP16 | 11.23 s | 0.54× |
+| 6 | MLX QQMM NVFP4 | FP4 / FP4 | 17.49 s | 0.34× |
+| 7 | MLX QQMM MXFP8 | FP8 / FP8 | 18.52 s | 0.33× |
+| 8 | PyTorch custom Metal baseline kernel | INT4 / FP16 | 232.62 s | 0.03× |
+
+Conclusion: MLX W4A16 is the fastest path on this M3, approximately 10% faster than the PyTorch FP16 baseline, with about 0.99 GB peak MLX memory. W8A8 and W4A4 through `mx.qqmm` dynamically quantize activations and do not provide a speed benefit on M3. The custom Metal kernel demonstrates direct packed-INT4 access but lacks matrix tiling and SIMD optimization, so it is not suitable for practical inference. Compilation, temperature, and system load affect individual runs; use warmups and compare medians for formal benchmarking.
 
 ### MLX Code Interfaces
 
@@ -367,7 +353,7 @@ model, manifest = load_mlx_transformer(
 
 ## Generation Options
 
-Run `python src/run_dit.py --help` or `python src/run_mlx_dit.py --help` for every available option. Common arguments include:
+Run `python src/main.py generate --help` or `python src/main.py mlx-generate --help` for every available option. Common arguments include:
 
 - `--class-label`: ImageNet class index; `281` is a tabby cat.
 - `--steps`: Number of inference steps.
